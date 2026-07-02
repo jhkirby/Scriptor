@@ -1,0 +1,9 @@
+# Build output
+build/
+
+# MSVC intermediate / debug files
+*.obj
+*.exe
+*.ilk
+*.pdb
+*.idb
