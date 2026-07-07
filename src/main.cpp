@@ -11,6 +11,7 @@
 
 // ---- Look & feel (tweak these freely) --------------------------------------
 static const COLORREF kBackgroundColor = RGB(45, 45, 45);   // gray background
+static const COLORREF kEditorColor     = RGB(30, 30, 30);   // darker inner box
 static const COLORREF kTextColor       = RGB(255, 255, 255); // white text
 static const COLORREF kBannerColor     = RGB(210, 210, 210); // light-grey toolbar
 static const COLORREF kBannerTextColor = RGB(25, 25, 25);   // dark text on banner
@@ -20,6 +21,8 @@ static const COLORREF kUnsavedColor    = RGB(190, 55, 55);  // "Unsaved" indicat
 static const wchar_t*  kFontFace        = L"Consolas";       // a monospace font
 static const int       kFontHeight      = 18;                // pixels
 static const int       kToolbarHeight   = 36;                // top toolbar strip
+static const int       kEditorMargin    = 16;                // gutter around inner box
+static const int       kEditorPadding   = 8;                 // text inset inside box
 
 // ---- Control / command IDs -------------------------------------------------
 #define ID_SAVE_BUTTON   1001
@@ -36,7 +39,8 @@ static HWND    g_loadButton   = nullptr; // Load button
 static HWND    g_label        = nullptr; // "File Name:" label
 static HWND    g_saveState    = nullptr; // "Saved"/"Unsaved" indicator
 static HFONT   g_font         = nullptr; // monospace font
-static HBRUSH  g_bgBrush      = nullptr; // dark editor background brush
+static HBRUSH  g_bgBrush      = nullptr; // dark editor background / gutter brush
+static HBRUSH  g_editorBrush  = nullptr; // darker inner text-box brush
 static HBRUSH  g_bannerBrush  = nullptr; // light-grey toolbar banner brush
 static HBRUSH  g_fieldBrush   = nullptr; // filename field background brush
 
@@ -318,13 +322,27 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         MoveWindow(g_saveButton,   saveX,  rowY,   btnW,   btnH,   TRUE);
         MoveWindow(g_loadButton,   loadX,  rowY,   btnW,   btnH,   TRUE);
 
-        // Main editor fills everything below the toolbar.
-        MoveWindow(g_editControl, 0, kToolbarHeight, w, h - kToolbarHeight, TRUE);
+        // Inner text box: inset from the window edges by a margin so the outer
+        // dark background shows through as a gutter around the darker box.
+        int boxX = kEditorMargin;
+        int boxY = kToolbarHeight + kEditorMargin;
+        int boxW = w - 2 * kEditorMargin;
+        int boxH = h - kToolbarHeight - 2 * kEditorMargin;
+        if (boxW < 0) boxW = 0;
+        if (boxH < 0) boxH = 0;
+        MoveWindow(g_editControl, boxX, boxY, boxW, boxH, TRUE);
 
-        // Repaint the banner strip so no stale pixels linger where controls
-        // moved as the window resized.
-        RECT banner = { 0, 0, w, kToolbarHeight };
-        InvalidateRect(hwnd, &banner, TRUE);
+        // Pad the text formatting rectangle so the caret/text never touch the
+        // box border. EM_SETRECT is relative to the control's client area and
+        // must be re-applied whenever the control is resized.
+        RECT fmt;
+        GetClientRect(g_editControl, &fmt);
+        InflateRect(&fmt, -kEditorPadding, -kEditorPadding);
+        SendMessageW(g_editControl, EM_SETRECT, 0, (LPARAM)&fmt);
+
+        // Repaint the toolbar strip and the gutter so no stale pixels linger
+        // where controls or the inner box moved as the window resized.
+        InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
     }
 
@@ -396,8 +414,8 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             return (LRESULT)g_fieldBrush;
         }
         SetTextColor(hdc, kTextColor);
-        SetBkColor(hdc, kBackgroundColor);
-        return (LRESULT)g_bgBrush;
+        SetBkColor(hdc, kEditorColor);
+        return (LRESULT)g_editorBrush;
     }
 
     case WM_DESTROY:
@@ -413,6 +431,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
     const wchar_t* kClassName = L"ScriptorMainWindow";
 
     g_bgBrush     = CreateSolidBrush(kBackgroundColor);
+    g_editorBrush = CreateSolidBrush(kEditorColor);
     g_bannerBrush = CreateSolidBrush(kBannerColor);
     g_fieldBrush  = CreateSolidBrush(kFieldColor);
 
@@ -455,6 +474,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
     if (hAccel) DestroyAcceleratorTable(hAccel);
     DeleteObject(g_bgBrush);
+    DeleteObject(g_editorBrush);
     DeleteObject(g_bannerBrush);
     DeleteObject(g_fieldBrush);
     return (int)msg.wParam;
