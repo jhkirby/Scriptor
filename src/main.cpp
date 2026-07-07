@@ -12,6 +12,11 @@
 // ---- Look & feel (tweak these freely) --------------------------------------
 static const COLORREF kBackgroundColor = RGB(45, 45, 45);   // gray background
 static const COLORREF kTextColor       = RGB(255, 255, 255); // white text
+static const COLORREF kBannerColor     = RGB(210, 210, 210); // light-grey toolbar
+static const COLORREF kBannerTextColor = RGB(25, 25, 25);   // dark text on banner
+static const COLORREF kFieldColor      = RGB(255, 255, 255); // filename field fill
+static const COLORREF kSavedColor      = RGB(30, 130, 60);  // "Saved" indicator
+static const COLORREF kUnsavedColor    = RGB(190, 55, 55);  // "Unsaved" indicator
 static const wchar_t*  kFontFace        = L"Consolas";       // a monospace font
 static const int       kFontHeight      = 18;                // pixels
 static const int       kToolbarHeight   = 36;                // top toolbar strip
@@ -28,9 +33,12 @@ static HWND    g_editControl  = nullptr; // main text area
 static HWND    g_filenameEdit = nullptr; // filename field in the toolbar
 static HWND    g_saveButton   = nullptr; // Save button
 static HWND    g_loadButton   = nullptr; // Load button
-static HWND    g_label        = nullptr; // "File name:" label
+static HWND    g_label        = nullptr; // "File Name:" label
+static HWND    g_saveState    = nullptr; // "Saved"/"Unsaved" indicator
 static HFONT   g_font         = nullptr; // monospace font
-static HBRUSH  g_bgBrush      = nullptr; // background brush
+static HBRUSH  g_bgBrush      = nullptr; // dark editor background brush
+static HBRUSH  g_bannerBrush  = nullptr; // light-grey toolbar banner brush
+static HBRUSH  g_fieldBrush   = nullptr; // filename field background brush
 
 // Create the main text area plus the toolbar controls.
 static void CreateControls(HWND parent)
@@ -44,16 +52,23 @@ static void CreateControls(HWND parent)
         ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL | ES_NOHIDESEL,
         0, 0, 0, 0, parent, nullptr, inst, nullptr);
 
-    // Toolbar: label + filename field + Save button.
+    // Toolbar: label + filename field + save-state indicator + Save + Load.
     g_label = CreateWindowExW(
-        0, L"STATIC", L"File name:",
+        0, L"STATIC", L"File Name:",
         WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
         0, 0, 0, 0, parent, nullptr, inst, nullptr);
 
+    // WS_EX_CLIENTEDGE gives the field a sunken outline so it reads as an
+    // editable box against the light-grey banner.
     g_filenameEdit = CreateWindowExW(
-        0, L"EDIT", L"",
+        WS_EX_CLIENTEDGE, L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
         0, 0, 0, 0, parent, (HMENU)ID_FILENAME_EDIT, inst, nullptr);
+
+    g_saveState = CreateWindowExW(
+        0, L"STATIC", L"Saved",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE | SS_CENTER,
+        0, 0, 0, 0, parent, nullptr, inst, nullptr);
 
     g_saveButton = CreateWindowExW(
         0, L"BUTTON", L"Save",
@@ -72,6 +87,15 @@ static void CreateControls(HWND parent)
         DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, kFontFace);
     SendMessageW(g_editControl,  WM_SETFONT, (WPARAM)g_font, TRUE);
     SendMessageW(g_filenameEdit, WM_SETFONT, (WPARAM)g_font, TRUE);
+}
+
+// Refresh the toolbar save-state indicator from the editor's modify flag.
+static void UpdateSaveIndicator()
+{
+    bool dirty = SendMessageW(g_editControl, EM_GETMODIFY, 0, 0) != 0;
+    SetWindowTextW(g_saveState, dirty ? L"Unsaved" : L"Saved");
+    // Force a repaint so WM_CTLCOLORSTATIC re-picks the text colour.
+    InvalidateRect(g_saveState, nullptr, TRUE);
 }
 
 // Save the main text area's contents to a .txt file chosen via the native
@@ -135,6 +159,7 @@ static bool DoSave(HWND hwnd)
 
     // The document now matches what's on disk, so it's no longer "dirty".
     SendMessageW(g_editControl, EM_SETMODIFY, FALSE, 0);
+    UpdateSaveIndicator();
     return true;
 }
 
@@ -225,6 +250,7 @@ static void DoLoad(HWND hwnd)
 
     // A just-loaded document matches disk, so start from a clean state.
     SendMessageW(g_editControl, EM_SETMODIFY, FALSE, 0);
+    UpdateSaveIndicator();
 }
 
 // Select all text in whichever edit box currently has focus (Ctrl+A): the
@@ -252,6 +278,7 @@ static void DoNew(HWND hwnd)
     SetWindowTextW(g_editControl, L"");
     SetWindowTextW(g_filenameEdit, L"");
     SendMessageW(g_editControl, EM_SETMODIFY, FALSE, 0);
+    UpdateSaveIndicator();
     SetFocus(g_editControl);
 }
 
@@ -266,17 +293,48 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     case WM_SIZE:
     {
         int w = LOWORD(lParam), h = HIWORD(lParam);
-        // Toolbar controls along the top strip.
-        MoveWindow(g_label,        8,  10,  64, 20, TRUE);
-        MoveWindow(g_filenameEdit, 76,  7, 200, 22, TRUE);
-        MoveWindow(g_saveButton,   284, 7,  72, 24, TRUE);
-        MoveWindow(g_loadButton,   364, 7,  72, 24, TRUE);
+
+        const int margin  = 10;
+        const int btnW    = 72, btnH = 24, rowY = 6;
+        const int indW    = 84, indH = 22, indY = 7;
+        const int labelW  = 78, labelH = 20, labelY = 8;
+
+        // Right-aligned group: Load at the far right, then Save, then the
+        // save-state indicator just to the left of the Save button.
+        int loadX  = w - margin - btnW;
+        int saveX  = loadX - margin - btnW;
+        int indX   = saveX - margin - indW;
+
+        // Left group: label, then the filename field stretching to fill the
+        // gap up to the indicator so nothing clusters on the left.
+        int labelX = margin;
+        int editX  = labelX + labelW + 6;
+        int editW  = indX - margin - editX;
+        if (editW < 80) editW = 80; // keep the field usable when very narrow
+
+        MoveWindow(g_label,        labelX, labelY, labelW, labelH, TRUE);
+        MoveWindow(g_filenameEdit, editX,  rowY,   editW,  22,     TRUE);
+        MoveWindow(g_saveState,    indX,   indY,   indW,   indH,   TRUE);
+        MoveWindow(g_saveButton,   saveX,  rowY,   btnW,   btnH,   TRUE);
+        MoveWindow(g_loadButton,   loadX,  rowY,   btnW,   btnH,   TRUE);
+
         // Main editor fills everything below the toolbar.
         MoveWindow(g_editControl, 0, kToolbarHeight, w, h - kToolbarHeight, TRUE);
+
+        // Repaint the banner strip so no stale pixels linger where controls
+        // moved as the window resized.
+        RECT banner = { 0, 0, w, kToolbarHeight };
+        InvalidateRect(hwnd, &banner, TRUE);
         return 0;
     }
 
     case WM_COMMAND:
+        // Editor text changed: reflect the new dirty state in the indicator.
+        if (HIWORD(wParam) == EN_CHANGE && (HWND)lParam == g_editControl)
+        {
+            UpdateSaveIndicator();
+            return 0;
+        }
         // These commands arrive both from button clicks (BN_CLICKED) and from
         // the accelerator table (notification code 1), so route on the ID.
         switch (LOWORD(wParam))
@@ -292,11 +350,51 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         SetFocus(g_editControl);
         return 0;
 
-    case WM_CTLCOLOREDIT:
+    case WM_ERASEBKGND:
+    {
+        // Paint the top strip as the light-grey toolbar banner and the rest
+        // as the dark editor background. (The editor control repaints its own
+        // area, so this mainly gives the toolbar its banner.)
+        HDC hdc = (HDC)wParam;
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        RECT banner = { rc.left, rc.top, rc.right, kToolbarHeight };
+        RECT below  = { rc.left, kToolbarHeight, rc.right, rc.bottom };
+        FillRect(hdc, &banner, g_bannerBrush);
+        FillRect(hdc, &below,  g_bgBrush);
+        return 1;
+    }
+
     case WM_CTLCOLORSTATIC:
     {
-        // Theme the edit controls and the label to match the dark background.
-        HDC hdc = (HDC)wParam;
+        // The label and save-state indicator sit on the light-grey banner.
+        HDC  hdc = (HDC)wParam;
+        HWND ctl = (HWND)lParam;
+        SetBkColor(hdc, kBannerColor);
+        if (ctl == g_saveState)
+        {
+            bool dirty = SendMessageW(g_editControl, EM_GETMODIFY, 0, 0) != 0;
+            SetTextColor(hdc, dirty ? kUnsavedColor : kSavedColor);
+        }
+        else
+        {
+            SetTextColor(hdc, kBannerTextColor);
+        }
+        return (LRESULT)g_bannerBrush;
+    }
+
+    case WM_CTLCOLOREDIT:
+    {
+        // The filename field is a light input box on the banner; the main
+        // editor keeps its dark theme.
+        HDC  hdc = (HDC)wParam;
+        HWND ctl = (HWND)lParam;
+        if (ctl == g_filenameEdit)
+        {
+            SetTextColor(hdc, kBannerTextColor);
+            SetBkColor(hdc, kFieldColor);
+            return (LRESULT)g_fieldBrush;
+        }
         SetTextColor(hdc, kTextColor);
         SetBkColor(hdc, kBackgroundColor);
         return (LRESULT)g_bgBrush;
@@ -314,7 +412,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
     const wchar_t* kClassName = L"ScriptorMainWindow";
 
-    g_bgBrush = CreateSolidBrush(kBackgroundColor);
+    g_bgBrush     = CreateSolidBrush(kBackgroundColor);
+    g_bannerBrush = CreateSolidBrush(kBannerColor);
+    g_fieldBrush  = CreateSolidBrush(kFieldColor);
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc   = WindowProc;
@@ -355,5 +455,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
     if (hAccel) DestroyAcceleratorTable(hAccel);
     DeleteObject(g_bgBrush);
+    DeleteObject(g_bannerBrush);
+    DeleteObject(g_fieldBrush);
     return (int)msg.wParam;
 }
